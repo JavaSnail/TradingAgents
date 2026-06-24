@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 MAX_OHLCV_STALE_DAYS = 10
 
 
-def yf_retry(func, max_retries=3, base_delay=2.0):
+def yf_retry(func, max_retries=5, base_delay=15.0):
     """Execute a yfinance call with exponential backoff on rate limits.
 
     yfinance raises YFRateLimitError on HTTP 429 responses but does not
@@ -172,6 +172,42 @@ def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
             auto_adjust=True,
         ))
         downloaded = _ensure_date_column(downloaded.reset_index())
+
+        # yfinance 对 A 股支持较差（002027.SZ 等返回空），回退到 AkShare
+        if downloaded.empty or "Close" not in downloaded.columns:
+            code = canonical.split(".")[0]
+            if code.isdigit() and len(code) == 6:
+                # 尝试 AkShare 获取 A 股数据
+                try:
+                    import akshare as ak
+                    from .akshare_common import bypass_proxy
+
+                    ak_start = start_date.strftime("%Y%m%d")
+                    ak_end = end_str.replace("-", "")  # YYYYMMDD
+
+                    with bypass_proxy():
+                        ak_df = ak.stock_zh_a_hist(
+                            symbol=code,
+                            period="daily",
+                            start_date=ak_start,
+                            end_date=ak_end,
+                            adjust="qfq",
+                        )
+
+                    if ak_df is not None and not ak_df.empty:
+                        # 映射中文列名 → 标准英文列名
+                        ak_df = ak_df.rename(columns={
+                            "日期": "Date", "开盘": "Open", "最高": "High",
+                            "最低": "Low", "收盘": "Close", "成交量": "Volume",
+                        })
+                        keep = [c for c in ["Date", "Open", "High", "Low", "Close", "Volume"] if c in ak_df.columns]
+                        ak_df = ak_df[keep]
+                        ak_df["Date"] = pd.to_datetime(ak_df["Date"])
+                        downloaded = ak_df
+                        logger.info("Loaded %s from AkShare (yfinance returned no rows)", symbol)
+                except Exception as ake:
+                    logger.debug("AkShare fallback also failed for %s: %s", symbol, ake)
+
         # Only cache real data — never persist an empty frame.
         if downloaded.empty or "Close" not in downloaded.columns:
             raise NoMarketDataError(

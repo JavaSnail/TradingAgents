@@ -71,23 +71,41 @@ def get_news(
 def _market_overview_summary(curr_date: str) -> str | None:
     """获取当日沪深市场整体涨跌统计，作为宏观新闻的量化背景补充。
 
-    返回人类可读摘要字符串；数据不可用时返回 None（不阻断主新闻流）。
+    用轻量的 ``stock_market_activity_legu``（市场活跃度快照，约 3s）而非
+    ``stock_zh_a_spot_em``（全市场 4000+ 股、分页拉取，耗时长且易被东财 CDN
+    限流掐断，是 News Analyst 阶段 10054 重试的主要来源）。返回人类可读摘要
+    字符串；数据不可用时返回 None（不阻断主新闻流）。
+
+    注意：二者都是实时快照，无法回溯历史日期的涨跌；回测场景下该补充段反映
+    的是"当前"市场宽幅而非 trade_date 当日，仅供背景参考。
     """
     try:
         with bypass_proxy():
-            df = ak.stock_zh_a_spot_em()
-        if df is None or df.empty or "涨跌幅" not in df.columns:
+            df = ak.stock_market_activity_legu()
+        if df is None or df.empty or "item" not in df.columns or "value" not in df.columns:
             return None
-        up = (df["涨跌幅"] > 0).sum()
-        down = (df["涨跌幅"] < 0).sum()
-        flat = len(df) - up - down
-        avg_change = df["涨跌幅"].mean()
-        return (
-            f"A-share market overview on {curr_date}: "
-            f"Total stocks: {len(df)}, "
-            f"Rising: {up}, Falling: {down}, Flat: {flat}, "
-            f"Average change: {avg_change:.2f}%"
-        )
+        # item/value 两列：上涨 / 下跌 / 平盘 / 涨停 / 跌停 / 活跃度 等
+        kv = {}
+        for _, row in df.iterrows():
+            kv[str(row["item"]).strip()] = row["value"]
+        up = kv.get("上涨")
+        down = kv.get("下跌")
+        flat = kv.get("平盘")
+        limit_up = kv.get("涨停")
+        limit_down = kv.get("跌停")
+        activity = kv.get("活跃度")
+        if up is None and down is None:
+            return None
+        parts = [f"Rising: {up}", f"Falling: {down}"]
+        if flat is not None:
+            parts.append(f"Flat: {flat}")
+        if limit_up is not None:
+            parts.append(f"LimitUp: {limit_up}")
+        if limit_down is not None:
+            parts.append(f"LimitDown: {limit_down}")
+        if activity is not None:
+            parts.append(f"Activity: {activity}")
+        return f"A-share market overview on {curr_date}: " + ", ".join(parts)
     except Exception:
         return None
 

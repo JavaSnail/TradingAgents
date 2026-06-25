@@ -25,14 +25,22 @@ def _cls_df() -> pd.DataFrame:
     ])
 
 
-def _spot_df() -> pd.DataFrame:
-    return pd.DataFrame({"涨跌幅": [1.2, -0.8, 0.0, 2.1]})
+def _activity_df() -> pd.DataFrame:
+    """模拟 stock_market_activity_legu 返回（item/value 两列）。"""
+    return pd.DataFrame([
+        {"item": "上涨", "value": 1128.0},
+        {"item": "下跌", "value": 3985.0},
+        {"item": "平盘", "value": 78.0},
+        {"item": "涨停", "value": 64.0},
+        {"item": "跌停", "value": 47.0},
+        {"item": "活跃度", "value": "21.66%"},
+    ])
 
 
 @pytest.mark.unit
 def test_global_news_cls_headlines_with_overview():
     with patch.object(akshare_news.ak, "stock_info_global_cls", return_value=_cls_df()), \
-         patch.object(akshare_news.ak, "stock_zh_a_spot_em", return_value=_spot_df()):
+         patch.object(akshare_news.ak, "stock_market_activity_legu", return_value=_activity_df()):
         out = akshare_news.get_global_news("2026-06-24", look_back_days=7, limit=50)
     data = json.loads(out)
     titles = [f["title"] for f in data["feed"]]
@@ -43,6 +51,10 @@ def test_global_news_cls_headlines_with_overview():
     assert "旧闻" not in titles
     # 末尾追加市场涨跌统计
     assert any("A-Share Market Daily Summary" in t for t in titles)
+    # 涨跌统计含上涨/下跌数值
+    overview = [f for f in data["feed"] if "A-Share Market Daily Summary" in f["title"]][0]
+    assert "Rising: 1128" in overview["summary"]
+    assert "Falling: 3985" in overview["summary"]
     # 财联社条目来源标记
     cls_items = [f for f in data["feed"] if f["source"].startswith("财联社")]
     assert len(cls_items) == 2
@@ -51,7 +63,7 @@ def test_global_news_cls_headlines_with_overview():
 @pytest.mark.unit
 def test_global_news_limit_truncates_cls():
     with patch.object(akshare_news.ak, "stock_info_global_cls", return_value=_cls_df()), \
-         patch.object(akshare_news.ak, "stock_zh_a_spot_em", return_value=_spot_df()):
+         patch.object(akshare_news.ak, "stock_market_activity_legu", return_value=_activity_df()):
         out = akshare_news.get_global_news("2026-06-24", look_back_days=7, limit=1)
     data = json.loads(out)
     # limit=1 截断财联社到 1 条；overview 仍会 append，故 items 为 1 或 2
@@ -61,7 +73,7 @@ def test_global_news_limit_truncates_cls():
 @pytest.mark.unit
 def test_global_news_cls_failure_falls_back_to_overview():
     with patch.object(akshare_news.ak, "stock_info_global_cls", side_effect=RuntimeError("net")), \
-         patch.object(akshare_news.ak, "stock_zh_a_spot_em", return_value=_spot_df()):
+         patch.object(akshare_news.ak, "stock_market_activity_legu", return_value=_activity_df()):
         out = akshare_news.get_global_news("2026-06-24", look_back_days=7, limit=50)
     data = json.loads(out)
     # 财联社失败，但涨跌统计仍可用
@@ -71,7 +83,7 @@ def test_global_news_cls_failure_falls_back_to_overview():
 @pytest.mark.unit
 def test_global_news_all_failure_returns_empty_feed():
     with patch.object(akshare_news.ak, "stock_info_global_cls", side_effect=RuntimeError("net")), \
-         patch.object(akshare_news.ak, "stock_zh_a_spot_em", side_effect=RuntimeError("net")):
+         patch.object(akshare_news.ak, "stock_market_activity_legu", side_effect=RuntimeError("net")):
         out = akshare_news.get_global_news("2026-06-24", look_back_days=7, limit=50)
     data = json.loads(out)
     assert data["feed"] == []
@@ -80,9 +92,9 @@ def test_global_news_all_failure_returns_empty_feed():
 
 @pytest.mark.unit
 def test_global_news_overview_missing_column_skipped():
-    # 涨跌幅列缺失时 overview 返回 None，不追加、不崩溃
+    # item/value 列缺失时 overview 返回 None，不追加、不崩溃
     with patch.object(akshare_news.ak, "stock_info_global_cls", return_value=_cls_df()), \
-         patch.object(akshare_news.ak, "stock_zh_a_spot_em", return_value=pd.DataFrame({"代码": ["000001"]})):
+         patch.object(akshare_news.ak, "stock_market_activity_legu", return_value=pd.DataFrame({"代码": ["000001"]})):
         out = akshare_news.get_global_news("2026-06-24", look_back_days=7, limit=50)
     data = json.loads(out)
     assert not any("A-Share Market Daily Summary" in f["title"] for f in data["feed"])

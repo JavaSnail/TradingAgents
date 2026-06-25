@@ -17,7 +17,9 @@ def get_news(
 ) -> str:
     """从东方财富获取个股新闻，返回 JSON 字符串。
 
-    AkShare 仅返回最近约 20 条新闻，无法精确按日期过滤，会尽量筛选日期范围内的数据。
+    AkShare ``stock_news_em`` 仅返回最近的个股新闻（实测约 10 条，无法精确
+    按日期回溯），这里尽量筛选日期范围内的数据。注意：参数名为 ``symbol``
+    （旧版 AkShare 用 ``stock``，1.18.x 已改名，传 ``stock=`` 会抛 TypeError）。
     """
     if not is_a_share(ticker):
         raise NoMarketDataError(
@@ -27,7 +29,7 @@ def get_news(
     code = normalize_symbol(ticker)
     try:
         with bypass_proxy():
-            df = ak.stock_news_em(stock=code)
+            df = ak.stock_news_em(symbol=code)
     except Exception as e:
         raise NoMarketDataError(ticker, code, f"news request failed: {e}") from e
 

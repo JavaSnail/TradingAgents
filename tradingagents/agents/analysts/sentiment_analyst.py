@@ -39,6 +39,11 @@ from tradingagents.agents.utils.structured import (
     bind_structured,
     invoke_structured_or_freetext,
 )
+from tradingagents.dataflows.akshare_common import is_a_share
+from tradingagents.dataflows.akshare_sentiment import (
+    fetch_ashare_quick_news,
+    fetch_ashare_sentiment,
+)
 from tradingagents.dataflows.reddit import fetch_reddit_posts
 from tradingagents.dataflows.stocktwits import fetch_stocktwits_messages
 
@@ -66,9 +71,22 @@ def create_sentiment_analyst(llm):
         # Pre-fetch all three sources. Each fetcher degrades gracefully and
         # returns a string (no exceptions surface from here), so the LLM
         # always sees something — either real data or a clear placeholder.
-        news_block = get_news.func(ticker, start_date, end_date)
-        stocktwits_block = fetch_stocktwits_messages(ticker, limit=30)
-        reddit_block = fetch_reddit_posts(ticker)
+        #
+        # A 股标的走中文数据源（东方财富个股新闻 + 千股千评 + 财联社快讯），
+        # 因为 StockTwits / Reddit 对 A 股基本无覆盖，硬接只会得到一堆
+        # <unavailable> 占位，导致情绪分析师对 A 股形同失效。
+        ashare = is_a_share(ticker)
+        if ashare:
+            news_block = fetch_ashare_quick_news(ticker, start_date, end_date)
+            stocktwits_block = fetch_ashare_sentiment(ticker)
+            reddit_block = (
+                "<ashare: A 股标的不适用 Reddit/StockTwits；情绪与快讯已分别"
+                "由千股千评和东方财富个股新闻提供于上方块。>"
+            )
+        else:
+            news_block = get_news.func(ticker, start_date, end_date)
+            stocktwits_block = fetch_stocktwits_messages(ticker, limit=30)
+            reddit_block = fetch_reddit_posts(ticker)
 
         system_message = _build_system_message(
             ticker=ticker,
@@ -77,6 +95,7 @@ def create_sentiment_analyst(llm):
             news_block=news_block,
             stocktwits_block=stocktwits_block,
             reddit_block=reddit_block,
+            is_ashare=ashare,
         )
 
         prompt = ChatPromptTemplate.from_messages(
@@ -118,42 +137,9 @@ def create_sentiment_analyst(llm):
     return sentiment_analyst_node
 
 
-def _build_system_message(
-    *,
-    ticker: str,
-    start_date: str,
-    end_date: str,
-    news_block: str,
-    stocktwits_block: str,
-    reddit_block: str,
-) -> str:
-    """Assemble the sentiment-analyst system message with structured data blocks."""
-    return f"""You are a financial market sentiment analyst. Your task is to produce a comprehensive sentiment report for {ticker} covering the period from {start_date} to {end_date}, drawing on three complementary data sources that have already been collected for you.
-
-## Data sources (pre-fetched, in this prompt)
-
-### News headlines — Yahoo Finance, past 7 days
-Institutional framing. Fact-driven, slower-moving signal.
-
-<start_of_news>
-{news_block}
-<end_of_news>
-
-### StockTwits messages — retail-trader social platform indexed by cashtag
-Fast-moving signal. Each message carries a user-labeled sentiment tag (Bullish / Bearish / no-label) plus the message body.
-
-<start_of_stocktwits>
-{stocktwits_block}
-<end_of_stocktwits>
-
-### Reddit posts — r/wallstreetbets, r/stocks, r/investing (past 7 days)
-Community discussion. Engagement signal via upvote score and comment count. Subreddit character matters (r/wallstreetbets is often contrarian/exuberant; r/stocks more measured; r/investing longer-term).
-
-<start_of_reddit>
-{reddit_block}
-<end_of_reddit>
-
-## How to analyze this data (best practices)
+def _global_analysis_guide() -> str:
+    """非 A 股标的的分析指南（StockTwits / Reddit 解读规则）。"""
+    return """## How to analyze this data (best practices)
 
 1. **Read the StockTwits Bullish/Bearish ratio as a leading retail-sentiment signal.** A 70/30 bullish/bearish split is moderately bullish; ≥90/10 may indicate over-extension and contrarian risk; 50/50 is uncertainty. Sample size matters — base rates on the actual message count, not percentages alone.
 
@@ -169,7 +155,87 @@ Community discussion. Engagement signal via upvote score and comment count. Subr
 
 7. **Identify catalysts and risks** that emerge across sources — news of upcoming earnings, product launches, competitive threats, macro headlines, etc.
 
-8. **Past sentiment is not predictive.** Frame your conclusions as signal for the trader to weigh alongside fundamentals and technicals, not as a price call.
+8. **Past sentiment is not predictive.** Frame your conclusions as signal for the trader to weigh alongside fundamentals and technicals, not as a price call."""
+
+
+def _ashare_analysis_guide() -> str:
+    """A 股标的的分析指南（千股千评 / 东方财富个股新闻解读规则）。"""
+    return """## 如何分析这些数据（最佳实践）
+
+1. **以千股千评综合得分作为核心情绪量化信号。** 综合得分 0-100，越高越偏多：≥80 偏多/强势，60-79 中性偏多，40-59 中性，<40 偏空。注意得分是东方财富聚合评价，本身有滞后，不要单看绝对值，要看“上升”字段反映的排名变化方向。
+
+2. **结合机构参与度与主力成本判断资金面。** 机构参与度越高（0-1）代表机构资金越活跃，往往预示趋势延续性强；主力成本高于现价意味着多数筹码浮亏（潜在支撑），低于现价则浮盈（潜在抛压）。
+
+3. **关注指数衡量散户关注度，警惕过热。** 关注指数过高 + 综合得分高位 + 涨幅已大，可能是情绪过热的反向信号；关注度低但得分上升，可能是底部 quietly 走强的信号。
+
+4. **个股新闻按事件 vs 观点区分权重。** 财报/公告/监管类是事件（权重高）；研报观点/市场传闻是观点（权重低）。注意东方财富个股新闻仅返回最近约 20 条且无法精确回溯，若返回条目少或含占位，需在 confidence 中如实标注。
+
+5. **寻找跨源背离。** 若个股新闻偏空但千股千评综合得分上行、机构参与度提升，这种背离本身就是信号——可能资金面与消息面不同步。
+
+6. **识别催化剂与风险。** 跨源反复出现的话题即主导叙事：业绩预告、行业政策、竞品动态、宏观事件等。
+
+7. **如实反映数据局限。** 若某源返回 <unavailable> 占位或数据条目极少，在 confidence 字段和 narrative 中明确标注，不要臆测。
+
+8. **过去情绪不等于未来预测。** 将结论定位为供交易员结合基本面、技术面权衡的信号，而非价格预测。"""
+
+
+def _build_system_message(
+    *,
+    ticker: str,
+    start_date: str,
+    end_date: str,
+    news_block: str,
+    stocktwits_block: str,
+    reddit_block: str,
+    is_ashare: bool = False,
+) -> str:
+    """Assemble the sentiment-analyst system message with structured data blocks."""
+    if is_ashare:
+        news_label = "东方财富个股新闻（过去 7 天）"
+        news_desc = "机构/媒体框架，事件驱动。注意仅返回最近约 20 条，无法精确按日期回溯。"
+        sentiment_label = "千股千评情绪数据（东方财富聚合评价）"
+        sentiment_desc = (
+            "现成的情绪与资金面标签：综合得分、机构参与度、关注指数、主力成本等，"
+            "省去自建情感模型。"
+        )
+        reddit_label = "Reddit / StockTwits（A 股不适用）"
+        reddit_desc = "A 股标的无 StockTwits / Reddit 覆盖，此块为说明性占位。"
+        guide = _ashare_analysis_guide()
+    else:
+        news_label = "News headlines — Yahoo Finance, past 7 days"
+        news_desc = "Institutional framing. Fact-driven, slower-moving signal."
+        sentiment_label = "StockTwits messages — retail-trader social platform indexed by cashtag"
+        sentiment_desc = "Fast-moving signal. Each message carries a user-labeled sentiment tag (Bullish / Bearish / no-label) plus the message body."
+        reddit_label = "Reddit posts — r/wallstreetbets, r/stocks, r/investing (past 7 days)"
+        reddit_desc = "Community discussion. Engagement signal via upvote score and comment count. Subreddit character matters (r/wallstreetbets is often contrarian/exuberant; r/stocks more measured; r/investing longer-term)."
+        guide = _global_analysis_guide()
+
+    return f"""You are a financial market sentiment analyst. Your task is to produce a comprehensive sentiment report for {ticker} covering the period from {start_date} to {end_date}, drawing on three complementary data sources that have already been collected for you.
+
+## Data sources (pre-fetched, in this prompt)
+
+### {news_label}
+{news_desc}
+
+<start_of_news>
+{news_block}
+<end_of_news>
+
+### {sentiment_label}
+{sentiment_desc}
+
+<start_of_stocktwits>
+{stocktwits_block}
+<end_of_stocktwits>
+
+### {reddit_label}
+{reddit_desc}
+
+<start_of_reddit>
+{reddit_block}
+<end_of_reddit>
+
+{guide}
 
 ## Output fields
 

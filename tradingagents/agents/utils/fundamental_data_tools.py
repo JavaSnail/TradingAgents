@@ -77,3 +77,24 @@ def get_income_statement(
         str: A formatted report containing income statement data
     """
     return route_to_vendor("get_income_statement", ticker, freq, curr_date)
+
+
+@tool
+def get_disclosures(
+    ticker: Annotated[str, "ticker symbol"],
+    curr_date: Annotated[str, "current date you are trading at, yyyy-mm-dd"],
+    look_back_days: Annotated[int, "look-back window in days for disclosures"] = 30,
+) -> str:
+    """
+    Retrieve company announcements/disclosures for a given ticker symbol.
+    A-share only: returns CNINFO filings (earnings forecasts, dividend, major
+    events, shareholding changes, regulatory inquiries, etc.). Uses the
+    configured fundamental_data vendor; unavailable for non-A-share tickers.
+    Args:
+        ticker (str): Ticker symbol of the company
+        curr_date (str): Current date you are trading at, yyyy-mm-dd
+        look_back_days (int): Look-back window in days (default 30)
+    Returns:
+        str: A CSV-formatted report containing recent disclosures
+    """
+    return route_to_vendor("get_disclosures", ticker, curr_date, look_back_days)

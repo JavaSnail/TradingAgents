@@ -3,6 +3,7 @@ import logging
 from .akshare import (
     get_balance_sheet as get_akshare_balance_sheet,
     get_cashflow as get_akshare_cashflow,
+    get_disclosures as get_akshare_disclosures,
     get_fundamentals as get_akshare_fundamentals,
     get_global_news as get_akshare_global_news,
     get_income_statement as get_akshare_income_statement,
@@ -63,7 +64,8 @@ TOOLS_CATEGORIES = {
             "get_fundamentals",
             "get_balance_sheet",
             "get_cashflow",
-            "get_income_statement"
+            "get_income_statement",
+            "get_disclosures",
         ]
     },
     "news_data": {
@@ -137,6 +139,12 @@ VENDOR_METHODS = {
         "akshare": get_akshare_income_statement,
         "alpha_vantage": get_alpha_vantage_income_statement,
         "yfinance": get_yfinance_income_statement,
+    },
+    # 上市公司公告（巨潮资讯）。akshare-only：yfinance/alpha_vantage 无对应实现，
+    # 非 akshare vendor 调用会经 route_to_vendor 返回明确的不可用信息；prompt 已
+    # 注明该工具仅适用于 A 股，避免美股用户被引导去调一个拿不到的工具。
+    "get_disclosures": {
+        "akshare": get_akshare_disclosures,
     },
     # news_data
     "get_news": {

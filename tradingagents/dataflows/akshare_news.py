@@ -6,7 +6,7 @@ import akshare as ak
 import pandas as pd
 from dateutil.relativedelta import relativedelta
 
-from .akshare_common import bypass_proxy, is_a_share, normalize_symbol
+from .akshare_common import bypass_proxy, is_a_share, is_index, normalize_symbol
 from .symbol_utils import NoMarketDataError
 
 
@@ -20,10 +20,26 @@ def get_news(
     AkShare ``stock_news_em`` 仅返回最近的个股新闻（实测约 10 条，无法精确
     按日期回溯），这里尽量筛选日期范围内的数据。注意：参数名为 ``symbol``
     （旧版 AkShare 用 ``stock``，1.18.x 已改名，传 ``stock=`` 会抛 TypeError）。
+
+    指数无个股新闻：返回空 feed + 提示改用 ``get_global_news``（财联社电报 +
+    沪深涨跌统计覆盖板块/市场层面），不抛异常以免 route_to_vendor 回退 yfinance。
     """
     if not is_a_share(ticker):
         raise NoMarketDataError(
             ticker, ticker, "AkShare only supports A-share (6-digit) symbols"
+        )
+    if is_index(ticker):
+        return json.dumps(
+            {
+                "feed": [],
+                "items": 0,
+                "note": (
+                    f"'{ticker}' is a market/sector index; stock_news_em only "
+                    f"covers individual stocks. Use get_global_news for sector/"
+                    f"market news (财联社电报 + 沪深涨跌统计)."
+                ),
+            },
+            ensure_ascii=False,
         )
 
     code = normalize_symbol(ticker)

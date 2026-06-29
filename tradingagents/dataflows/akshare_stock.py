@@ -7,6 +7,7 @@ from .akshare_common import (
     bypass_proxy,
     format_header,
     is_a_share,
+    is_index,
     normalize_symbol,
     to_akshare_date,
 )
@@ -33,7 +34,12 @@ def get_stock(
 ) -> str:
     """从 AkShare 获取 A 股日线 OHLCV 数据，返回 CSV 字符串。
 
-    仅支持 A 股（6 位纯数字代码），非 A 股触发 NoMarketDataError 使路由回退到 yfinance。
+    个股（6 位代码）走 ``stock_zh_a_hist``；板块/市场指数（is_index 判定）
+    走 ``index_zh_a_hist``。非 A 股触发 NoMarketDataError 使路由回退到 yfinance。
+
+    指数分支失败时不抛 NoMarketDataError 而是返回 NO_DATA 哨兵字符串——
+    指数代码在 yfinance 无对应标的，回退只会触发限流退避（约 8 分钟空转），
+    故在此直接收口，避免指数输入触达 yfinance。
     """
     if not is_a_share(symbol):
         raise NoMarketDataError(
@@ -44,19 +50,48 @@ def get_stock(
     ak_start = to_akshare_date(start_date)
     ak_end = to_akshare_date(end_date)
 
+    index_mode = is_index(symbol)
+
     try:
         with bypass_proxy():
-            df = ak.stock_zh_a_hist(
-                symbol=code,
-                period="daily",
-                start_date=ak_start,
-                end_date=ak_end,
-                adjust="qfq",
+            if index_mode:
+                # 指数无复权概念，不传 adjust；列名与个股接口一致（无成交额/换手率/涨跌幅）
+                df = ak.index_zh_a_hist(
+                    symbol=code,
+                    period="daily",
+                    start_date=ak_start,
+                    end_date=ak_end,
+                )
+            else:
+                df = ak.stock_zh_a_hist(
+                    symbol=code,
+                    period="daily",
+                    start_date=ak_start,
+                    end_date=ak_end,
+                    adjust="qfq",
+                )
+    except TypeError as e:
+        # akshare 内部 bug（部分非主流指数如 930908/932051 会抛 TypeError）
+        if index_mode:
+            return (
+                f"NO_DATA_AVAILABLE: index {code} hit AkShare internal error "
+                f"({e}). Try a different index code. Do not fabricate values."
             )
+        raise NoMarketDataError(symbol, code, f"AkShare request failed: {e}") from e
     except Exception as e:
+        if index_mode:
+            return (
+                f"NO_DATA_AVAILABLE: index {code} request failed ({e}). "
+                f"Do not fabricate values."
+            )
         raise NoMarketDataError(symbol, code, f"AkShare request failed: {e}") from e
 
     if df is None or df.empty:
+        if index_mode:
+            return (
+                f"NO_DATA_AVAILABLE: no index data for {code} between "
+                f"{start_date} and {end_date}. Do not fabricate values."
+            )
         raise NoMarketDataError(
             symbol, code, f"no rows between {start_date} and {end_date}"
         )
@@ -72,5 +107,6 @@ def get_stock(
             df[col] = df[col].round(2)
 
     csv_str = df.to_csv(index=False)
-    header = format_header(f"{code} (AkShare)", start_date, end_date, len(df))
+    label = f"{code} (AkShare Index)" if index_mode else f"{code} (AkShare)"
+    header = format_header(label, start_date, end_date, len(df))
     return header + csv_str

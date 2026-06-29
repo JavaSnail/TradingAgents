@@ -15,7 +15,7 @@ from typing import Annotated
 
 import akshare as ak
 
-from .akshare_common import bypass_proxy, is_a_share, normalize_symbol, to_akshare_date
+from .akshare_common import bypass_proxy, is_a_share, is_index, normalize_symbol, to_akshare_date
 from .symbol_utils import NoMarketDataError
 
 
@@ -41,6 +41,15 @@ def get_disclosures(
     if not is_a_share(ticker):
         raise NoMarketDataError(
             ticker, ticker, "AkShare only supports A-share (6-digit) symbols"
+        )
+    if is_index(ticker):
+        # 指数无个股公告（巨潮资讯只收录上市公司公告），返回哨兵而非抛异常，
+        # 避免 route_to_vendor 回退到 yfinance。
+        code = normalize_symbol(ticker)
+        return (
+            f"NO_DATA_AVAILABLE: '{ticker}' is a market/sector index ({code}). "
+            f"Indices have no company disclosures. Do not fabricate values; "
+            f"report that this data category does not apply to index symbols."
         )
 
     code = normalize_symbol(ticker)

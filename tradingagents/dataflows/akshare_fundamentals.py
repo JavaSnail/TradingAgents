@@ -4,8 +4,23 @@ from typing import Annotated
 import akshare as ak
 import pandas as pd
 
-from .akshare_common import bypass_proxy, is_a_share, normalize_symbol, to_sina_symbol
+from .akshare_common import bypass_proxy, is_a_share, is_index, normalize_symbol, to_sina_symbol
 from .symbol_utils import NoMarketDataError
+
+
+def _index_no_data_sentinel(ticker: str, data_category: str) -> str:
+    """指数无对应财务数据时返回的统一哨兵。
+
+    指数（板块/市场指数）没有财报、股本结构、内部人交易等个股专属数据。
+    返回哨兵字符串而非抛 NoMarketDataError，避免 route_to_vendor 回退到
+    yfinance（雅虎对 A 股指数同样无此类数据，回退只会空转）。
+    """
+    code = normalize_symbol(ticker)
+    return (
+        f"NO_DATA_AVAILABLE: '{ticker}' is a market/sector index ({code}). "
+        f"Indices have no {data_category}. Do not fabricate values; report that "
+        f"this data category does not apply to index symbols."
+    )
 
 
 def _filter_by_date(df: pd.DataFrame, curr_date: str, date_col: str) -> pd.DataFrame:
@@ -27,6 +42,8 @@ def get_fundamentals(
         raise NoMarketDataError(
             ticker, ticker, "AkShare only supports A-share (6-digit) symbols"
         )
+    if is_index(ticker):
+        return _index_no_data_sentinel(ticker, "company fundamentals")
 
     code = normalize_symbol(ticker)
     lines = [f"# Company Fundamentals for {code} (AkShare)"]
@@ -101,6 +118,8 @@ def get_balance_sheet(
         raise NoMarketDataError(
             ticker, ticker, "AkShare only supports A-share (6-digit) symbols"
         )
+    if is_index(ticker):
+        return _index_no_data_sentinel(ticker, "balance sheet")
 
     sina_code = to_sina_symbol(ticker)
     try:
@@ -136,6 +155,8 @@ def get_income_statement(
         raise NoMarketDataError(
             ticker, ticker, "AkShare only supports A-share (6-digit) symbols"
         )
+    if is_index(ticker):
+        return _index_no_data_sentinel(ticker, "income statement")
 
     code = normalize_symbol(ticker)
     try:
@@ -170,6 +191,8 @@ def get_cashflow(
         raise NoMarketDataError(
             ticker, ticker, "AkShare only supports A-share (6-digit) symbols"
         )
+    if is_index(ticker):
+        return _index_no_data_sentinel(ticker, "cash flow statement")
 
     code = normalize_symbol(ticker)
     try:
@@ -197,7 +220,9 @@ def get_cashflow(
 def get_insider_transactions(
     ticker: Annotated[str, "股票代码"],
 ) -> str:
-    """AkShare 暂无标准内部人交易接口，返回说明文本。"""
+    """AkShare 暂无标准内部人交易接口，返回说明文本；指数则返回无数据哨兵。"""
+    if is_index(ticker):
+        return _index_no_data_sentinel(ticker, "insider transactions")
     return (
         f"AkShare does not provide insider transaction data for A-shares ({ticker}). "
         "Please refer to the CNINFO or SZSE/SSE disclosure platforms for insider filings."

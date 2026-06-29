@@ -123,9 +123,83 @@ def to_sina_symbol(symbol: str) -> str:
 
 
 def is_a_share(symbol: str) -> bool:
-    """判断是否为 A 股代码（6 位纯数字，或带 .SZ/.SS 后缀的 6 位数字）。"""
+    """判断是否为 A 股代码（6 位纯数字，或带 .SZ/.SS 后缀的 6 位数字）。
+
+    注意：本函数语义是"A 股市场标识"，对板块/市场指数（如 931743）也返回
+    True——指数同样是 A 股市场标的，需要走中文数据源、跳过 FRED/Reddit 等
+    境外数据。要区分"个股 vs 指数"，请用 :func:`is_index` 做正交判断。
+    """
     code = normalize_symbol(symbol)
     return code.isdigit() and len(code) == 6
+
+
+# 无歧义指数代码段（前缀）：纯数字即可判定为指数，无需交易所后缀消歧。
+# 930/931/932 为中证规模/行业/主题指数，880 为申万行业指数。
+_INDEX_PREFIXES = ("930", "931", "932", "880")
+
+# 歧义段（000xxx/399xxx）中无歧义的知名指数码白名单。
+# 这些代码在个股接口 stock_zh_a_hist 返回空，且与个股无代码冲突，
+# 可直接判为指数。冷门指数若不在白名单，需用户带 .SZ/.SS 后缀消歧。
+_INDEX_KNOWN_CODES = frozenset({
+    "000300",  # 沪深300
+    "000016",  # 上证50
+    "000852",  # 中证1000
+    "000905",  # 中证500
+    "000010",  # 上证180
+    "000906",  # 中证800
+    "000907",  # 中证700
+    "000908",  # 中证全指
+    "399001",  # 深证成指
+    "399006",  # 创业板指
+    "399005",  # 中小板指
+    "399300",  # 沪深300（深所）
+    "399010",  # 深证200
+    "399015",  # 深证100
+    "399106",  # 深证综指
+    "399107",  # 深证A指
+    "399108",  # 深证B指
+    "399311",  # 国证1000
+    "399365",  # 国证行业
+})
+
+
+def is_index(symbol: str) -> bool:
+    """判断是否为 A 股板块/市场指数代码（白名单 + 后缀消歧）。
+
+    识别策略（绝不依赖接口探测——``index_zh_a_hist`` 对个股代码也会返回
+    错误数据，探测会误判，见实测事实）：
+
+      1. 取交易所后缀（``.SH/.SS/.SZ/.BJ`` 等，大小写不敏感）与 6 位代码。
+         注意：``normalize_symbol`` 取 ``.`` 前会丢后缀，而后缀是歧义码消歧
+         的唯一依据，故本函数先保留原始 symbol 再拆分。
+      2. 无歧义指数段（930/931/932/880）→ True（无视后缀）。
+      3. 知名指数码白名单（000300/399001 等）→ True。
+      4. 歧义码（如 000001）带 ``.SH/.SS`` 后缀 → True（上证指数）；
+         带 ``.SZ`` 或无后缀 → False（按个股，如平安银行）。
+      5. 其余 6 位数字 → False。
+
+    典型判别：
+      ``931743``→True、``000300``→True、``399001``→True、
+      ``000001.SH``→True、``000001.SZ``→False、``000001``→False、
+      ``002027``→False。
+    """
+    if not isinstance(symbol, str) or not symbol.strip():
+        return False
+    s = symbol.strip().upper()
+    code = s.split(".", 1)[0]
+    suffix = s[len(code):] if "." in s else ""
+    if not (code.isdigit() and len(code) == 6):
+        return False
+    if code.startswith(_INDEX_PREFIXES):
+        return True
+    if code in _INDEX_KNOWN_CODES:
+        return True
+    # 歧义段（000xxx/399xxx）：仅当带沪市后缀才判为指数
+    # （000001.SH = 上证指数；000001.SZ / 无后缀 = 平安银行个股）。
+    # 后缀消歧只作用于歧义段——600519.SS（茅台个股）等个股段带 .SS 仍是个股。
+    if code.startswith(("000", "399")) and suffix in (".SH", ".SS"):
+        return True
+    return False
 
 
 def to_akshare_date(date_str: str) -> str:

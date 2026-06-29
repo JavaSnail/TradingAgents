@@ -17,7 +17,7 @@ from typing import Annotated
 
 import akshare as ak
 
-from .akshare_common import bypass_proxy, is_a_share, normalize_symbol
+from .akshare_common import bypass_proxy, is_a_share, is_index, normalize_symbol
 from .akshare_news import get_news as _get_ashare_news
 
 
@@ -28,10 +28,16 @@ def fetch_ashare_sentiment(ticker: str) -> str:
         ticker: A 股代码，如 ``600519.SS`` / ``002027.SZ``。
 
     Returns:
-        可读字符串块；非 A 股标的、未命中千股千评或拉取失败时返回占位串。
+        可读字符串块；非 A 股标的、指数（千股千评仅覆盖个股）、未命中或拉取
+        失败时返回占位串。
     """
     if not is_a_share(ticker):
         return f"<ashare sentiment unavailable for {ticker}: not an A-share symbol>"
+    if is_index(ticker):
+        return (
+            f"<ashare sentiment unavailable for {ticker}: market/sector index; "
+            f"千股千评仅覆盖个股，指数情绪请参考 get_global_news 的财联社电报>"
+        )
 
     code = normalize_symbol(ticker)
     try:

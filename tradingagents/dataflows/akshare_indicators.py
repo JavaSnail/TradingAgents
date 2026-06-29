@@ -6,7 +6,7 @@ import pandas as pd
 from dateutil.relativedelta import relativedelta
 from stockstats import wrap
 
-from .akshare_common import bypass_proxy, is_a_share, normalize_symbol, to_akshare_date
+from .akshare_common import bypass_proxy, is_a_share, is_index, normalize_symbol, to_akshare_date
 from .symbol_utils import NoMarketDataError
 
 # 与 y_finance.py 中保持一致的指标描述
@@ -55,8 +55,11 @@ _COL_MAP = {
 }
 
 
-def _fetch_ohlcv_for_indicators(code: str, curr_date: str) -> pd.DataFrame:
+def _fetch_ohlcv_for_indicators(symbol: str, curr_date: str) -> pd.DataFrame:
     """获取足够长度的 OHLCV 数据用于指标计算（回溯 300 天）。
+
+    个股走 ``stock_zh_a_hist``，板块/市场指数走 ``index_zh_a_hist``（无复权）。
+    两者列名一致（开盘列均为"开盘"），keep 列表只取 6 列，指数无成交额也兼容。
 
     注意：此函数不调用 bypass_proxy()——调用方 get_indicator() 已包裹整个上下文。
     """
@@ -65,13 +68,22 @@ def _fetch_ohlcv_for_indicators(code: str, curr_date: str) -> pd.DataFrame:
     ak_start = start_dt.strftime("%Y%m%d")
     ak_end = curr_dt.strftime("%Y%m%d")
 
-    df = ak.stock_zh_a_hist(
-        symbol=code,
-        period="daily",
-        start_date=ak_start,
-        end_date=ak_end,
-        adjust="qfq",
-    )
+    code = normalize_symbol(symbol)
+    if is_index(symbol):
+        df = ak.index_zh_a_hist(
+            symbol=code,
+            period="daily",
+            start_date=ak_start,
+            end_date=ak_end,
+        )
+    else:
+        df = ak.stock_zh_a_hist(
+            symbol=code,
+            period="daily",
+            start_date=ak_start,
+            end_date=ak_end,
+            adjust="qfq",
+        )
 
     if df is None or df.empty:
         raise NoMarketDataError(code, code, f"no OHLCV data up to {curr_date}")
@@ -96,6 +108,8 @@ def get_indicator(
     """用 AkShare 获取 A 股 OHLCV，再用 stockstats 计算技术指标。
 
     仅支持 A 股，非 A 股触发 NoMarketDataError 使路由回退 yfinance。
+    指数分支失败时返回 NO_DATA 哨兵字符串——指数在 yfinance 无对应标的，
+    回退只会触发限流退避空转，故直接收口。
     """
     if not is_a_share(symbol):
         raise NoMarketDataError(
@@ -109,11 +123,31 @@ def get_indicator(
         )
 
     code = normalize_symbol(symbol)
+    index_mode = is_index(symbol)
 
     try:
         with bypass_proxy():
-            df = _fetch_ohlcv_for_indicators(code, curr_date)
+            df = _fetch_ohlcv_for_indicators(symbol, curr_date)
+    except NoMarketDataError:
+        if index_mode:
+            return (
+                f"NO_DATA_AVAILABLE: no OHLCV for index {code} up to {curr_date}. "
+                f"Do not fabricate values."
+            )
+        raise
+    except TypeError as e:
+        if index_mode:
+            return (
+                f"NO_DATA_AVAILABLE: index {code} hit AkShare internal error "
+                f"({e}). Do not fabricate values."
+            )
+        raise NoMarketDataError(code, code, f"AkShare request failed: {e}") from e
     except Exception as e:
+        if index_mode:
+            return (
+                f"NO_DATA_AVAILABLE: index {code} request failed ({e}). "
+                f"Do not fabricate values."
+            )
         raise NoMarketDataError(code, code, f"AkShare request failed: {e}") from e
 
     stock = wrap(df.copy())
@@ -122,9 +156,11 @@ def get_indicator(
     curr_dt = datetime.strptime(curr_date, "%Y-%m-%d")
     before_dt = curr_dt - relativedelta(days=look_back_days)
 
+    # stockstats.wrap 会把 date 列提升为索引，故日期取自 iterrows 的索引
+    # （idx），而非 row["date"]——后者会 KeyError。
     lines = []
-    for _, row in stock.iterrows():
-        row_date = row["date"] if hasattr(row["date"], "strftime") else pd.Timestamp(row["date"])
+    for idx, row in stock.iterrows():
+        row_date = idx if hasattr(idx, "strftime") else pd.Timestamp(idx)
         if before_dt <= row_date <= curr_dt:
             val = row.get(indicator)
             date_str = row_date.strftime("%Y-%m-%d")
